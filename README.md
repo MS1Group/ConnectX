@@ -34,6 +34,10 @@ your local network — everything is relayed directly by the host machine.
 
 ## Requirements
 
+These apply if you're running with Python (Option A below). If you're
+using the prebuilt app (Option B), everything is already bundled in —
+you don't need any of this.
+
 - Python 3.9 or later (comes with `tkinter` on most installs)
 - [Pillow](https://pypi.org/project/Pillow/), for image support:
   ```bash
@@ -46,9 +50,9 @@ your local network — everything is relayed directly by the host machine.
   pip3 install pillow-heif
   ```
 
-All machines — the host and every client — need Python and Pillow
-installed. Notifications currently only work on macOS, since they use
-the built-in `osascript` command.
+The **host** always needs Python installed regardless (see Usage
+below) — `host.py` isn't packaged as an app. Notifications currently
+only work on macOS, since they use the built-in `osascript` command.
 
 ## Installation
 
@@ -59,6 +63,11 @@ pip3 install pillow
 ```
 
 ## Usage
+
+**The host always runs via Python, no matter what.** `host.py` is a
+plain script — it was intentionally kept out of the packaged app — so
+whoever hosts needs Python 3 installed and runs it from Terminal. This
+applies even if everyone joining uses the prebuilt app below.
 
 1. **Pick one computer to be the host.** All machines must be on the
    same Wi-Fi/LAN network.
@@ -73,20 +82,30 @@ pip3 install pillow
    Give this IP address to the clients.
    ```
    Leave this running — it's the relay every client connects through.
-   If the host machine's own user wants to chat too, they also run
-   `client.py` (see below) and connect to `127.0.0.1`.
 
-3. **On each client machine**, run:
+3. **Everyone joining** (including the host machine's own user, who
+   connects to `127.0.0.1`) picks one of two ways to run the client:
+
+   **Option A — Run with Python**
    ```bash
    python3 client.py
    ```
-   Enter the host's IP address (printed in step 2) and a username, then
-   click **Connect**.
 
-4. **Chat.** Click a conversation in the left sidebar to switch between
-   Group and any private conversations. Whichever conversation is
-   selected is also who your next message is sent to. Use the 📷 button
-   to attach an image.
+   **Option B — Download the prebuilt app** *(Apple Silicon Mac only)*
+
+   [**⬇ Download ConnectX.app**](https://github.com/<your-username>/connectx/releases/latest)
+
+   No Python or dependencies needed — everything is bundled inside the
+   app. It is **not code-signed** (no paid Apple Developer account), so
+   the first launch will show macOS's "cannot be opened because the
+   developer cannot be verified" warning. **Right-click the app → Open**
+   once to allow it — after that it opens normally every time.
+
+4. **Chat.** Enter the host's IP address and a username, then click
+   **Connect**. Click a conversation in the left sidebar to switch
+   between Group and any private conversations. Whichever conversation
+   is selected is also who your next message is sent to. Use the 📷
+   button to attach an image.
 
 ### Firewall note
 
@@ -100,6 +119,7 @@ connect.
 connectx/
 ├── host.py     # the server — routes messages between connected clients
 ├── client.py   # the GUI — connect, chat, send images, get notified
+├── setup.py    # py2app build script — packages client.py as ConnectX.app
 └── README.md
 ```
 
@@ -107,6 +127,7 @@ connectx/
 |-------------|-----------------------------------------------------------------|
 | `host.py`   | The server. Accepts client connections and routes messages by recipient (group broadcast or private, by username). Runs one thread per connected client. |
 | `client.py` | The GUI. Connects to a host, sends/receives messages and images, and handles all display, threading, and notification logic. |
+| `setup.py`  | Build script for packaging `client.py` as a standalone Mac app with `py2app`. Not needed to just run the project with Python — only to build the app. |
 
 ## How it works
 
@@ -121,6 +142,12 @@ connectx/
   reads can't share a thread, so a background thread does nothing but
   read incoming messages into a queue; the GUI polls that queue every
   100ms and is the only thing that ever touches widgets.
+- **Local history**: each client saves its own conversations to a
+  SQLite database in `~/Library/Application Support/ConnectX/`. Text
+  is stored directly in the database; images are saved as files
+  alongside it (only the filename is stored in the database) so it
+  doesn't balloon in size. This is local to each machine — it isn't
+  synced between devices or with the host.
 
 ## Known limitations
 
@@ -129,11 +156,15 @@ connectx/
   server for that).
 - **No encryption** — messages are sent as plain-text JSON. Fine for a
   trusted home/office network, not suitable for anything sensitive.
-- **No message history** — nothing is saved to disk; closing the app
-  loses the conversation.
+- **History is per-machine, not per-account** — messages are saved
+  locally on whichever machine sent/received them (see
+  [How it works](#how-it-works)). If different people share the same
+  Mac at different times, they'll see the same local history.
 - **Animated GIFs send as a single static frame**, not the full
   animation.
 - **No chunking for large files** — an image is sent as one message;
   very large or unusual images may briefly pause the UI while
   encoding/decoding.
 - **Notifications are macOS-only** for now.
+- **The app isn't code-signed** — expect a one-time Gatekeeper warning
+  on first launch per machine (see Usage above).

@@ -1,5 +1,5 @@
 # ConnectX
-# LAN Chat
+
 
 A lightweight group and private messaging app for computers on the same
 local network — no internet, no external server, no account required.

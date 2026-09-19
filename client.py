@@ -31,7 +31,11 @@ import queue
 import base64
 import io
 import os
+import sys
 import subprocess
+import sqlite3
+import uuid
+from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox, filedialog
 
@@ -60,6 +64,109 @@ PORT = 5050
 MAX_SEND_DIMENSION = 1600   # shrink images to at most this on their longest side before sending
 THUMBNAIL_DIMENSION = 260   # size images are shown at inside a chat bubble
 NOTIFICATION_BODY_MAX_CHARS = 120  # truncate long messages in the notification banner
+
+# Local, per-machine chat history. macOS's standard location for a user's
+# own app data — this is NOT shared between your 3 Macs, each one keeps
+# its own history of whatever conversations happened on it. Text lives
+# directly in the database; images are saved as files here too (with only
+# the filename stored in the database) so the database itself doesn't
+# balloon in size the way embedding base64 image data in it would.
+APP_SUPPORT_DIR = (os.path.expanduser("~/Library/Application Support/ConnectX")
+                    if sys.platform == "darwin" else os.path.expanduser("~/.connectx"))
+HISTORY_DB_PATH = os.path.join(APP_SUPPORT_DIR, "history.db")
+HISTORY_IMAGES_DIR = os.path.join(APP_SUPPORT_DIR, "images")
+
+
+def init_history_db():
+    """Create the local database (and images folder) if they don't exist
+    yet, and return an open connection. Only 'chat' and 'image' messages
+    are ever stored — join/leave notices and errors are transient status,
+    not conversation history, so they're never written here."""
+    os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+    os.makedirs(HISTORY_IMAGES_DIR, exist_ok=True)
+    conn = sqlite3.connect(HISTORY_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_key TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT,
+            image_filename TEXT,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def save_image_to_disk(base64_data):
+    """Decode a base64 image payload and save it under HISTORY_IMAGES_DIR
+    with a unique filename. Returns just the filename (not the full path)
+    to store in the database, or None if the image couldn't be decoded."""
+    try:
+        raw = base64.b64decode(base64_data)
+        if PIL_AVAILABLE:
+            fmt = (Image.open(io.BytesIO(raw)).format or "JPEG").lower()
+        else:
+            fmt = "jpg"
+        ext = "jpg" if fmt == "jpeg" else fmt
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        with open(os.path.join(HISTORY_IMAGES_DIR, filename), "wb") as f:
+            f.write(raw)
+        return filename
+    except Exception:
+        return None
+
+
+def save_message_to_history(conn, conversation_key, sender, kind, text=None, image_filename=None):
+    conn.execute(
+        "INSERT INTO messages (conversation_key, sender, kind, text, image_filename, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (conversation_key, sender, kind, text, image_filename, datetime.now().isoformat()),
+    )
+    conn.commit()
+
+
+def load_history(conn, current_username):
+    """Returns {conversation_key: [message dicts]}, oldest first, in the
+    exact shape ChatClient uses at runtime. 'own' is recomputed against
+    the CURRENT username rather than trusting a stored flag, since the
+    same machine could be used to join under a different username later —
+    a message should only show as "own" if it matches who you are now."""
+    conversations = {}
+    rows = conn.execute(
+        "SELECT conversation_key, sender, kind, text, image_filename FROM messages ORDER BY id ASC"
+    ).fetchall()
+
+    for conversation_key, sender, kind, text, image_filename in rows:
+        own = (sender == current_username)
+        if kind == "chat":
+            msg = {"kind": "chat", "from": sender, "text": text or "", "own": own}
+        elif kind == "image":
+            msg = _reload_image_message(sender, image_filename, own)
+        else:
+            continue
+        conversations.setdefault(conversation_key, []).append(msg)
+
+    return conversations
+
+
+def _reload_image_message(sender, image_filename, own):
+    """Read a previously-saved image back off disk and re-encode it to the
+    same base64-in-memory shape used for a live image message, so the
+    existing rendering code needs no special case for "loaded from
+    history" vs. "just received". Falls back to a text placeholder if the
+    file is missing (e.g. the images folder was moved or cleaned up)."""
+    if not image_filename:
+        return {"kind": "chat", "from": sender, "text": "[image unavailable]", "own": own}
+    try:
+        with open(os.path.join(HISTORY_IMAGES_DIR, image_filename), "rb") as f:
+            raw = f.read()
+        return {"kind": "image", "from": sender, "data": base64.b64encode(raw).decode("ascii"),
+                "filename": image_filename, "own": own}
+    except OSError:
+        return {"kind": "chat", "from": sender, "text": "[image unavailable]", "own": own}
 
 # --- Dark, WhatsApp-inspired palette. Every widget uses ONLY these
 # constants for bg/fg — never an unset default. ---
@@ -134,6 +241,14 @@ class ChatClient:
         # away to another app/window, matching normal chat-app behavior).
         self.app_focused = True
 
+        # History is best-effort: if the local database can't be opened
+        # for any reason (permissions, disk full), the app should still
+        # work — it just won't remember anything between sessions.
+        try:
+            self.history_conn = init_history_db()
+        except Exception:
+            self.history_conn = None
+
         self._build_connect_screen()
 
     # ---------- Connect screen ----------
@@ -206,9 +321,32 @@ class ChatClient:
 
         self.connect_frame.destroy()
         self._build_chat_screen()
+        self._load_local_history()
 
         threading.Thread(target=self._receive_loop, daemon=True).start()
         self.root.after(100, self._poll_incoming)
+
+    def _load_local_history(self):
+        """Populate self.conversations with anything previously saved on
+        THIS machine. Runs after _build_chat_screen() (not before) because
+        it needs the sidebar widgets to already exist to redraw them
+        afterward — going through _get_or_create_conversation() before the
+        UI exists would crash trying to rebuild a sidebar that isn't built
+        yet."""
+        if not self.history_conn:
+            return
+        try:
+            loaded = load_history(self.history_conn, self.username)
+        except Exception:
+            return
+
+        for conv_key, messages in loaded.items():
+            conv = self.conversations.setdefault(conv_key, Conversation(conv_key, is_group=(conv_key == "Group")))
+            conv.messages = messages + conv.messages
+
+        if loaded:
+            self._rebuild_sidebar()
+            self._render_conversation(self.current_key)
 
     # ---------- Chat screen layout ----------
 
@@ -409,12 +547,35 @@ class ChatClient:
         conv = self._get_or_create_conversation(key, is_group=(key == "Group"))
         conv.messages.append(msg)
 
+        # Every text/image message — sent or received — passes through
+        # here exactly once, so this is the one place that needs to know
+        # about persistence. System messages (join/leave, errors) are
+        # deliberately never saved — they're transient status, not
+        # conversation content.
+        if msg["kind"] in ("chat", "image"):
+            self._persist_message(key, msg)
+
         if key == self.current_key:
             self._render_one_message(msg, conv.is_group)
             self._scroll_to_bottom()
         else:
             conv.unread += 1
             self._rebuild_sidebar()
+
+    def _persist_message(self, key, msg):
+        """Best-effort: a history save failing should never break the chat
+        itself, so every failure here is swallowed rather than surfaced."""
+        if not self.history_conn:
+            return
+        try:
+            if msg["kind"] == "chat":
+                save_message_to_history(self.history_conn, key, msg["from"], "chat", text=msg["text"])
+            elif msg["kind"] == "image":
+                image_filename = save_image_to_disk(msg["data"])
+                save_message_to_history(self.history_conn, key, msg["from"], "image",
+                                         image_filename=image_filename)
+        except Exception:
+            pass
 
     def _on_focus_in(self, event):
         if event.widget == self.root:

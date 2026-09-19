@@ -222,7 +222,7 @@ class ClickableLabel(tk.Label):
 class ChatClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("LAN Chat")
+        self.root.title("ConnectX")
         self.root.configure(bg=BG_APP)
         self.sock = None
         self.username = None
@@ -257,7 +257,7 @@ class ChatClient:
         self.connect_frame = tk.Frame(self.root, padx=24, pady=24, bg=BG_APP)
         self.connect_frame.pack(fill="both", expand=True)
 
-        tk.Label(self.connect_frame, text="LAN Chat", font=("Helvetica", 18, "bold"),
+        tk.Label(self.connect_frame, text="ConnectX", font=("Helvetica", 18, "bold"),
                  bg=BG_APP, fg=TEXT_PRIMARY).grid(row=0, column=0, columnspan=2, pady=(0, 16))
 
         tk.Label(self.connect_frame, text="Host IP address:", bg=BG_APP, fg=TEXT_PRIMARY,
@@ -351,7 +351,7 @@ class ChatClient:
     # ---------- Chat screen layout ----------
 
     def _build_chat_screen(self):
-        self.root.title(f"LAN Chat — {self.username}")
+        self.root.title(f"ConnectX — {self.username}")
         self.root.geometry("780x540")
         self.root.configure(bg=BG_APP)
 

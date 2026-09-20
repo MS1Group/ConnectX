@@ -93,7 +93,7 @@ applies even if everyone joining uses the prebuilt app below.
 
    **Option B — Download the prebuilt app** *(Apple Silicon Mac only)*
 
-   [**⬇ Download ConnectX.app**](https://github.com/MS1Group/ConnectX/releases/tag/App)
+   [**⬇ Download ConnectX.app**](https://github.com/MS1Group/ConnectX/releases/tag/latest)
 
    No Python or dependencies needed — everything is bundled inside the
    app. It is **not code-signed** (no paid Apple Developer account), so
